@@ -14,9 +14,7 @@ def verify_google_token(token):
         settings.GOOGLE_CLIENT_ID
     )
 
-from datetime import datetime
-import jwt
-from django.conf import settings
+
 
 def user_login_service(data):
 

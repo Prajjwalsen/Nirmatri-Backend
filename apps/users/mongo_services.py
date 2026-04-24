@@ -2,11 +2,9 @@
 MongoDB-based User Services
 Example of how to use the new database layer in Django services
 """
-from typing import Dict, Any, Optional, List
-from apps.db import (
+from typing import Dict, Any, Optional
+from apps.db.mongo import (
     users_collection, 
-    serialize_doc, 
-    serialize_docs,
     validate_object_id,
     DatabaseError,
     ValidationError,
