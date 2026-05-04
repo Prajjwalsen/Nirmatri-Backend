@@ -2,15 +2,11 @@ import json
 import jwt
 from datetime import datetime, timedelta
 from django.http import JsonResponse
-
 from django.views.decorators.csrf import csrf_exempt
 from apps.db.mongo import db
 from bson import ObjectId
+from apps.db.mongo.connection import superadmin_collection
 
-products = db["products"]
-orders = db["orders"]
-superadmins = db["superadmins"]
-sellers = db["sellers"]
 
 SECRET_KEY = "8f7d9c2a1b3e4f5a6c7d8e9f0a1b2c3d4"
 
@@ -30,7 +26,7 @@ def superadmin_login(request):
     email = data.get("email")
     password = data.get("password")
 
-    admin = superadmins.find_one({"email": email})
+    admin = superadmin_collection.find_one({"email": email})
 
     if not admin:
         return JsonResponse({"error": "Admin not found"}, status=404)
@@ -57,6 +53,8 @@ def superadmin_login(request):
 # ==============================
 
 def all_sellers(request):
+    if request.method != "GET":
+        return JsonResponse({"error": "GET request required"}, status=405)
 
     data = list(sellers.find())
 
@@ -70,19 +68,12 @@ def all_sellers(request):
 # GET PENDING SELLERS
 # ==============================
 
-from django.views.decorators.http import require_GET, require_POST
-from apps.db.mongo.db_collections import sellers_collection
-from bson import ObjectId
-from datetime import datetime
-import json
-
-
-# GET PENDING SELLERS FOR SUPERADMIN
-
-
-@require_GET
 def get_pending_sellers(request):
 
+    if request.method != "GET":
+        return JsonResponse({
+            "error": "GET request required"
+        }, status=405)
 
     data = list(sellers.find({"status": "pending"}))
 
@@ -122,23 +113,36 @@ def reject_seller(request, seller_id):
 # ADMIN DASHBOARD
 # ==============================
 
+products = db["products"]
+orders = db["orders"]
+sellers = db["sellers"]
+
+
 def admin_dashboard(request):
 
     total_sellers = sellers.count_documents({})
-    pending_sellers = sellers.count_documents({"status": "pending"})
+
+    pending_sellers = sellers.count_documents({
+        "status": "pending"
+    })
+
     total_products = products.count_documents({})
 
     revenue = 0
-    for o in orders.find({}):
-        revenue += o.get("amount", 0)
+
+    # calculate revenue
+    for order in orders.find({}):
+
+        revenue += order.get("total_price", 0)   # <-- important
 
     return JsonResponse({
+
         "total_sellers": total_sellers,
         "pending_sellers": pending_sellers,
         "products": total_products,
         "revenue": revenue
-    })
 
+    })
 # ==============================
 # RECENT ACTIVITIES FOR ADMIN DASHBOARD
 # ==============================
@@ -172,107 +176,135 @@ def recent_activities(request):
 
     return JsonResponse({"activities": activities})
 
-    page = int(request.GET.get("page", 1))
-    limit = 20
-    skip = (page - 1) * limit
+# ==============================
+# GET SELLER DETAILS    
+# ==============================
+from django.http import JsonResponse
+from bson import ObjectId
+from apps.db.mongo import db
 
-    sellers = list(
-        sellers_collection.find(
-            {
-                "onboarding_completed": True,
-                "status": "pending"
-            },
-            {"password": 0}
-        ).skip(skip).limit(limit)
-    )
+sellers = db["sellers"]
 
-    for seller in sellers:
-        seller["_id"] = str(seller["_id"])
+def seller_detail(request, seller_id):
+
+    seller = sellers.find_one({"_id": ObjectId(seller_id)})
+
+    if not seller:
+        return JsonResponse({"error": "Seller not found"}, status=404)
+
+    seller["_id"] = str(seller["_id"])
 
     return JsonResponse({
-        "pending_sellers": sellers
+        "seller": seller
     })
 
-def pending_seller_count(request):
+# ==============================
+# CHANGE PASSWORD   
+#=============================
+admins = db["superadmins"]
 
-    count = sellers_collection.count_documents({
-        "onboarding_completed": True,
-        "status": "pending"
+@csrf_exempt
+def change_password(request):
+
+    if request.method != "POST":
+        return JsonResponse({"error": "POST required"}, status=405)
+
+    data = json.loads(request.body)
+
+    admin_id = data.get("admin_id")
+    old_password = data.get("old_password")
+    new_password = data.get("new_password")
+
+    admin = admins.find_one({"_id": ObjectId(admin_id)})
+
+    if admin["password"] != old_password:
+        return JsonResponse({"error": "Wrong password"}, status=400)
+
+    admins.update_one(
+        {"_id": ObjectId(admin_id)},
+        {"$set": {"password": new_password}}
+    )
+
+    return JsonResponse({"message": "Password updated"})
+
+# ==============================
+# ADD SUB ADMIN 
+# ==============================
+@csrf_exempt
+def add_sub_admin(request):
+
+    data = json.loads(request.body)
+
+    admins.insert_one({
+        "name": data["name"],
+        "email": data["email"],
+        "password": data["password"],
+        "role": "subadmin"
     })
 
-    return JsonResponse({"count": count})
+    return JsonResponse({"message": "Sub Admin Created"})
 
-# APPROVE SELLER
+# ==============================
+#ROLE MANAGEMENT
+# ==============================
+def get_admins(request):
 
-@require_POST
-def approve_seller(request):
-    try:
-        data = json.loads(request.body)
-        seller_id = data.get("seller_id")
+    data = list(admins.find())
 
-        sellers_collection.update_one(
-            {"_id": ObjectId(seller_id)},
-            {
-                "$set": {
-                    "status": "approved",
-                    "approved_at": datetime.utcnow(),
-                    "approved_by": "superadmin"
-                }
-            }
-        )
+    for a in data:
+        a["_id"] = str(a["_id"])
 
-        return JsonResponse({"message": "Seller approved"}, status=200)
+    return JsonResponse({"admins": data})
+# ==============================
+# UPDATE ROLE
+# ==============================
+@csrf_exempt
+def update_role(request):
 
-    except Exception as e:
-        return JsonResponse({"error": str(e)}, status=500)
+    data = json.loads(request.body)
 
+    superadmin_collection.update_one(
+        {"_id":ObjectId(data["admin_id"])},
+        {"$set":{"role":data["role"]}}
+    )
 
-# ======================================
-# REJECT SELLER
-# ======================================
+    return JsonResponse({"message":"Role updated"})
+# ==============================
+# GET SETTINGS      
+# ==============================
+settings_collection = db["settings"]
 
-@require_POST
-def reject_seller(request):
-    try:
-        data = json.loads(request.body)
-        seller_id = data.get("seller_id")
+def get_settings(request):
 
-        sellers_collection.update_one(
-            {"_id": ObjectId(seller_id)},
-            {
-                "$set": {
-                    "status": "rejected"
-                }
-            }
-        )
+    settings = settings_collection.find_one({"type": "system"})
 
-        return JsonResponse({"message": "Seller rejected"}, status=200)
+    if not settings:
+        settings = {
+            "emailNotifications": True,
+            "twoFactorAuth": False,
+            "autoApprove": False,
+            "maintenanceMode": False
+        }
 
-    except Exception as e:
-        return JsonResponse({"error": str(e)}, status=500)
+    settings.pop("_id", None)
 
+    return JsonResponse(settings)
+# ==============================
+# UPDATE SETTINGS
 
-# ======================================
-# SUSPEND SELLER
-# ======================================
+@csrf_exempt
+def update_settings(request):
 
-@require_POST
-def suspend_seller(request):
-    try:
-        data = json.loads(request.body)
-        seller_id = data.get("seller_id")
+    if request.method != "POST":
+        return JsonResponse({"error": "POST required"}, status=405)
 
-        sellers_collection.update_one(
-            {"_id": ObjectId(seller_id)},
-            {
-                "$set": {
-                    "status": "suspended"
-                }
-            }
-        )
+    data = json.loads(request.body)
 
-        return JsonResponse({"message": "Seller suspended"}, status=200)
+    settings_collection.update_one(
+        {"type": "system"},
+        {"$set": data},
+        upsert=True
+    )
 
-    except Exception as e:
-        return JsonResponse({"error": str(e)}, status=500)
-
+    return JsonResponse({"message": "Settings updated"})
+   
